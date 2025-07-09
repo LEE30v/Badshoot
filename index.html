@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BadShoot 射擊奪旗遊戲</title>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.js"></script>
+  <script src="https://unpkg.com/colyseus.js/dist/colyseus.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: transparent;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+    }
+    /* 直接用 DOM 背景呈現超高解析度的天空，避開 WebGL 4096px 紋理上限 */
+    body {
+      background: url('sky.png') center/cover no-repeat fixed;
+    }
+    canvas {
+      background: transparent; /* 讓天空透過來 */
+    }
+  </style>
+</head>
+<body>
+<script>
+  const config = {
+    type: Phaser.AUTO,
+    scale: {
+      mode: Phaser.Scale.FIT,
+      autoCenter: Phaser.Scale.CENTER_BOTH,
+      width: 800,
+      height: 600,
+      resolution: window.devicePixelRatio
+    },
+    render: {
+      pixelArt: false,
+      roundPixels: false,
+      transparent: true
+    },
+    physics: {
+      default: 'arcade',
+      arcade: {
+        gravity: { y: 600 },
+        debug: false
+      }
+    },
+    scene: {
+      preload: preload,
+      create: create,
+      update: update
+    }
+  };
+
+  const game = new Phaser.Game(config);
+
+  let player;
+  let cursors;
+  let platforms;
+  let flag;
+  let base;
+  let material;
+  let hasFlag = false;
+  let inventory = 0;
+
+  function preload() {
+    this.load.image('blockLeft', 'terrain/terrain_grass_block_top_left.png');
+    this.load.image('blockRight', 'terrain/terrain_grass_block_top_right.png');
+    this.load.image('player', 'https://labs.phaser.io/assets/sprites/phaser-dude.png');
+    this.load.image('flag', 'https://labs.phaser.io/assets/sprites/flag.png');
+    this.load.image('material', 'https://labs.phaser.io/assets/sprites/coin.png');
+    this.load.image('base', 'https://labs.phaser.io/assets/sprites/platform.png');
+  }
+
+  function create() {
+    platforms = this.physics.add.staticGroup();
+
+    // 底部平台 tile 拼接
+    let startX = 100;
+    let y = 580;
+    for (let i = 0; i < 5; i++) {
+      platforms.create(startX + i * 64, y, (i % 2 === 0) ? 'blockLeft' : 'blockRight');
+    }
+
+    // 空中平台 tile 拼接
+    startX = 300;
+    y = 400;
+    for (let i = 0; i < 4; i++) {
+      platforms.create(startX + i * 64, y, (i % 2 === 0) ? 'blockLeft' : 'blockRight');
+    }
+
+    // 玩家角色
+    player = this.physics.add.sprite(100, 450, 'player');
+    player.setBounce(0.2);
+    player.setCollideWorldBounds(true);
+
+    this.physics.add.collider(player, platforms);
+
+    flag = this.physics.add.sprite(600, 450, 'flag');
+    flag.setCollideWorldBounds(true);
+
+    base = this.physics.add.staticSprite(100, 500, 'base');
+    material = this.physics.add.sprite(500, 300, 'material');
+    material.setBounce(0.5);
+
+    this.physics.add.collider(flag, platforms);
+    this.physics.add.collider(material, platforms);
+    this.physics.add.overlap(player, flag, grabFlag, null, this);
+    this.physics.add.overlap(player, material, collectMaterial, null, this);
+    this.physics.add.overlap(player, base, deliverFlag, null, this);
+
+    cursors = this.input.keyboard.createCursorKeys();
+    let room;
+    const client = new Colyseus.Client("ws://localhost:2567");
+
+    client.joinOrCreate("badshoot_room").then(r => {
+      room = r;
+      console.log("已加入房間：" + room.sessionId);
+      r.onStateChange.once(state => {
+        setInterval(() => {
+          room.send("move", { x: player.x, y: player.y });
+        }, 100);
+      });
+
+      r.state.players.onAdd = (playerData, sessionId) => {
+        if (sessionId !== room.sessionId) {
+          console.log("其他玩家加入：", sessionId);
+        }
+      };
+    }).catch(e => {
+      console.error("連線失敗", e);
+    });
+  }
+
+  function grabFlag(player, flagObj) {
+    if (!hasFlag) {
+      hasFlag = true;
+      flagObj.setVisible(false);
+      console.log("旗幟已撿起！");
+    }
+  }
+
+  function collectMaterial(player, item) {
+    inventory += 1;
+    item.disableBody(true, true);
+    console.log("素材 +1，目前素材數量：" + inventory);
+  }
+
+  function deliverFlag(player, baseObj) {
+    if (hasFlag) {
+      console.log("旗幟成功送達基地！奪旗成功！");
+      hasFlag = false;
+      flag.setVisible(true);
+      flag.setPosition(600, 450);
+    }
+  }
+
+  function update() {
+    player.setVelocityX(0);
+
+    if (cursors.left.isDown) {
+      player.setVelocityX(-160);
+    } else if (cursors.right.isDown) {
+      player.setVelocityX(160);
+    }
+
+    if (cursors.up.isDown && player.body.touching.down) {
+      player.setVelocityY(-400);
+    }
+
+    if (hasFlag) {
+      flag.x = player.x;
+      flag.y = player.y - 40;
+    }
+    document.getElementById("ui").innerHTML = "素材：" + inventory + "<br>旗幟：" + (hasFlag ? "持有中" : "未持有");
+  }
+</script>
+<div id="ui" style="
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    color: white;
+    font-family: sans-serif;
+    background: rgba(0,0,0,0.6);
+    padding: 8px 12px;
+    border-radius: 6px;
+    pointer-events: none;
+  ">
+    素材：0<br>旗幟：未持有
+  </div>
+</body>
+</html>
